@@ -89,3 +89,5 @@ Pause/resume uses A2DP SUSPEND and a readiness-check/START sequence, while keepi
 
 Pause/resume hardware validation passed on ES-BT09: three pause/resume sequences preserved the consumed PCM position while paused and resumed increasing transmitted audio bytes. A rapid pause/resume toggle also restarted streaming successfully. The player was left playing, with no PCM underruns during the test. Results and device logs are recorded in `tests/hardware_pause_resume.json`.
 # CYD_Mp3_palyer
+
+Screen redraws: dynamic widgets use one reusable 288×30, 4-bit sprite (about 4.3 KB). Timeline updates are sent only when the elapsed second or progress pixel changes; Play/Pause, favorites, volume and Bluetooth status update independently. Normal playback no longer clears the bottom 67 pixels twice per second. Volume, playback and Bluetooth changes do not clear the whole screen. Full repainting is limited to page/content changes and leaving calibration. Diagnostics include `uiClears` and `uiPushes` to check redraw behavior on the board.
