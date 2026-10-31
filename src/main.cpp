@@ -13,6 +13,12 @@
 #include <freertos/stream_buffer.h>
 
 TFT_eSPI tft;
+TFT_eSprite widgetCanvas(&tft);
+bool widgetCanvasReady=false;
+uint32_t uiClears=0,uiPushes=0;
+bool forceFullFrame=true;
+int renderedPage=-1,renderedTrack=-2,renderedFilter=-1,renderedOffset=-1,renderedLyricPage=-1;
+String renderedNotice;
 CydBluetooth bluetooth;
 SemaphoreHandle_t mediaLock, pcmLock;
 struct Track { String path, title; bool art, lyrics, favorite; };
@@ -44,6 +50,7 @@ int calibrationStep=0;
 uint32_t calibrationPressedAt=0;
 String calibrationMessage;
 void startCalibration() {
+  forceFullFrame=true;
   calibrating=true;calibrationStep=0;calibrationCaptured=false;calibrationDown=false;
   calibrationMessage="Tap and hold each cross";calibrationDirty=true;
 }
@@ -188,20 +195,79 @@ void scan() {
 }
 void text(const String &s,int x,int y,uint16_t color=INK,int font=2) { tft.setTextColor(color,BG); tft.drawString(s,x,y,font); }
 void button(int x,int y,int w,const String &s,bool active=false) { tft.fillRoundRect(x,y,w,30,9,active?ACCENT:PANEL); tft.setTextColor(active?BG:INK); tft.drawCentreString(s,x+w/2,y+7,2); }
-void transport() {
-  tft.fillRect(0,173,320,67,BG);
-  uint32_t position,total; bool active;
-  xSemaphoreTake(mediaLock,portMAX_DELAY); position=isMp3?compressedPosition:played; total=dataSize; active=playing; xSemaphoreGive(mediaLock);
-  tft.fillRoundRect(16,175,288,4,2,PANEL); if(total && position)tft.fillRect(16,175,uint64_t(288)*std::min(position,total)/total,4,ACCENT);
-  char times[40]; unsigned s=played/176400, d=total/176400;
-  if(isMp3)snprintf(times,sizeof(times),"%u:%02u / MP3",s/60,s%60);
-  else snprintf(times,sizeof(times),"%u:%02u / %u:%02u",s/60,s%60,d/60,d%60); text(times,16,183,MUTED);
-  button(16,207,55,"PREV"); button(80,207,100,active?"PAUSE":"PLAY",true); button(189,207,55,"NEXT"); button(253,207,51,current>=0&&tracks[current].favorite?"FAV*":"FAV");
+// 4-bit palette: one reusable 4.3 KB widget buffer, no full-screen framebuffer.
+void pushWidget(int x,int y,int w,int h) {
+  widgetCanvas.pushSprite(x,y,0,0,w,h);uiPushes++;
+}
+void smoothButton(int x,int y,int w,const String &label,bool active=false) {
+  if(!widgetCanvasReady){button(x,y,w,label,active);return;}
+  widgetCanvas.fillSprite(0);
+  widgetCanvas.fillRoundRect(0,0,w,30,9,active?4:1);
+  widgetCanvas.setTextColor(active?0:2,active?4:1);
+  widgetCanvas.drawCentreString(label,w/2,7,2);pushWidget(x,y,w,30);
+}
+void drawBluetooth(bool force=false) {
+  static int shown=-1;
+  int status=bluetooth.status;if(!force && shown==status)return;
+  const char *labels[]={"BT searching","BT connecting","BT connected","BT pair failed"};
+  if(widgetCanvasReady){
+    widgetCanvas.fillSprite(0);widgetCanvas.setTextColor(3,0);
+    widgetCanvas.drawString(labels[status],0,0,1);pushWidget(199,9,121,12);
+  } else {tft.fillRect(199,9,121,12,BG);text(labels[status],199,9,MUTED,1);}
+  shown=status;
+}
+void drawVolume(bool force=false) {
+  static int shown=-1;
+  int volume=bluetooth.get_volume();if(!force && shown==volume)return;
+  if(force){smoothButton(120,140,42,"-");smoothButton(254,140,50,"+");}
+  String value=String(volume*100/127)+"%";
+  if(widgetCanvasReady){widgetCanvas.fillSprite(0);widgetCanvas.setTextColor(4,0);widgetCanvas.drawString(value,0,0,1);pushWidget(187,151,44,12);}
+  else {tft.fillRect(187,151,44,12,BG);text(value,187,151,ACCENT,1);}
+  shown=volume;
+}
+void transport(bool force=false) {
+  static int lastBar=-1,lastSecond=-1,lastDuration=-1,lastActive=-1,lastFavorite=-1;
+  static bool lastMp3=false;
+  uint32_t position,total,pcmPosition;bool active,mp3Track;
+  xSemaphoreTake(mediaLock,portMAX_DELAY);
+  position=isMp3?compressedPosition:played;total=dataSize;pcmPosition=played;active=playing;mp3Track=isMp3;
+  xSemaphoreGive(mediaLock);
+  int bar=total?uint64_t(288)*std::min(position,total)/total:0;
+  unsigned second=pcmPosition/176400,duration=total/176400;
+  if(force || lastBar!=bar || lastSecond!=int(second) || lastDuration!=int(duration) || lastMp3!=mp3Track) {
+    char times[40];
+    if(mp3Track)snprintf(times,sizeof(times),"%u:%02u / MP3",second/60,second%60);
+    else snprintf(times,sizeof(times),"%u:%02u / %u:%02u",second/60,second%60,duration/60,duration%60);
+    if(widgetCanvasReady) {
+      widgetCanvas.fillSprite(0);widgetCanvas.fillRoundRect(0,0,288,4,2,1);
+      if(bar)widgetCanvas.fillRect(0,0,bar,4,4);
+      widgetCanvas.setTextColor(3,0);widgetCanvas.drawString(times,0,8,2);
+      pushWidget(16,175,288,26);
+    } else {
+      tft.fillRect(16,175,288,26,BG);tft.fillRoundRect(16,175,288,4,2,PANEL);
+      if(bar)tft.fillRect(16,175,bar,4,ACCENT);text(times,16,183,MUTED);
+    }
+    lastBar=bar;lastSecond=second;lastDuration=duration;lastMp3=mp3Track;
+  }
+  int favorite=current>=0 && tracks[current].favorite;
+  if(force){smoothButton(16,207,55,"PREV");smoothButton(189,207,55,"NEXT");}
+  if(force || lastActive!=int(active))smoothButton(80,207,100,active?"PAUSE":"PLAY",true);
+  if(force || lastFavorite!=favorite)smoothButton(253,207,51,favorite?"FAV*":"FAV");
+  lastActive=active;lastFavorite=favorite;
+}
+void refreshWidgets(bool force=false) {
+  drawBluetooth(force);
+  if(page==0){drawVolume(force);transport(force);}
 }
 void draw() {
-  tft.fillScreen(BG); text("CYD / MUSIC",12,7,ACCENT);
-  const char *btLabels[]={"BT searching","BT connecting","BT connected","BT pair failed"};
-  text(btLabels[bluetooth.status],199,9,MUTED,1);
+  bool full=forceFullFrame || page!=renderedPage || current!=renderedTrack || notice!=renderedNotice ||
+    (page==1 && (filter!=renderedFilter || offset!=renderedOffset)) ||
+    (page==2 && lyricPage!=renderedLyricPage);
+  if(!full){refreshWidgets();dirty=false;return;}
+  forceFullFrame=false;renderedPage=page;renderedTrack=current;renderedNotice=notice;
+  renderedFilter=filter;renderedOffset=offset;renderedLyricPage=lyricPage;
+  tft.fillScreen(BG);uiClears++;text("CYD / MUSIC",12,7,ACCENT);
+  drawBluetooth(true);
   button(8,30,94,"PLAYER",page==0); button(112,30,94,"PLAYLIST",page==1); button(216,30,96,"LYRICS",page==2);
   if(page==0) {
     tft.fillRoundRect(12,70,96,96,12,PANEL);
@@ -210,7 +276,7 @@ void draw() {
     text(current>=0?shorten(tracks[current].title,23):"Your music, here.",120,79);
     text("SD CARD / BLUETOOTH",120,108,MUTED,1);
     text(shorten(notice.length()?notice:String(tracks.size())+" tracks in library",29),120,130,MUTED,1);
-    button(120,140,42,"-");text(String(bluetooth.get_volume()*100/127)+"%",187,151,ACCENT,1);button(254,140,50,"+");transport();
+    drawVolume(true);transport(true);
   } else if(page==1) {
     const char *filters[]={"ALL","ART","LYRICS","FAV"};
     for(int i=0;i<4;i++) button(8+i*78,65,72,filters[i],filter==i);
@@ -346,6 +412,13 @@ void setup() {
       std::isfinite(touchMapping.c)&&std::isfinite(touchMapping.d)&&std::isfinite(touchMapping.e)&&std::isfinite(touchMapping.f);
   }
   prefs.end();if(!calibrated)startCalibration();
+  widgetCanvas.setColorDepth(4);
+  widgetCanvasReady=widgetCanvas.createSprite(288,30)!=nullptr;
+  if(widgetCanvasReady){
+    widgetCanvas.setPaletteColor(0,BG);widgetCanvas.setPaletteColor(1,PANEL);
+    widgetCanvas.setPaletteColor(2,INK);widgetCanvas.setPaletteColor(3,MUTED);widgetCanvas.setPaletteColor(4,ACCENT);
+  }
+  Serial.printf("UI widget buffer: %s\n",widgetCanvasReady?"ready (4-bit)":"direct drawing fallback");
   TJpgDec.setCallback(jpeg); TJpgDec.setJpgScale(1);
   SPI.begin(18,19,23,5);sdReady=SD.begin(5,SPI,20000000);
   btName=DEFAULT_BT_NAME;
@@ -380,8 +453,8 @@ void setup() {
 }
 void playbackStatus() {
   xSemaphoreTake(mediaLock,portMAX_DELAY);
-  Serial.printf("PLAYBACK active=%d calibration=%d queued=%u bytes=%u peak=%d underruns=%u EOF=%d source=%u/%u volume=%d audio=%d heap=%u\n",
-    int(playing),int(calibrating),unsigned(xStreamBufferBytesAvailable(pcmQueue)),unsigned(pcmBytes),int(pcmPeak),unsigned(pcmUnderruns),int(sourceEOF),unsigned(compressedPosition),unsigned(dataSize),bluetooth.get_volume(),int(bluetooth.get_audio_state()),ESP.getFreeHeap());
+  Serial.printf("PLAYBACK active=%d calibration=%d queued=%u bytes=%u peak=%d underruns=%u EOF=%d source=%u/%u volume=%d audio=%d heap=%u uiClears=%u uiPushes=%u\n",
+    int(playing),int(calibrating),unsigned(xStreamBufferBytesAvailable(pcmQueue)),unsigned(pcmBytes),int(pcmPeak),unsigned(pcmUnderruns),int(sourceEOF),unsigned(compressedPosition),unsigned(dataSize),bluetooth.get_volume(),int(bluetooth.get_audio_state()),ESP.getFreeHeap(),unsigned(uiClears),unsigned(uiPushes));
   xSemaphoreGive(mediaLock);
 }
 void loop() {
@@ -408,6 +481,6 @@ void loop() {
   if(calibrating){calibrationTick();wasTouch=true;delay(20);return;}
   int x,y;bool down=touch(x,y);if(down&&!wasTouch)tap(x,y);wasTouch=down;
   if(ended){ended=false;next(1);}
-  if(dirty)draw();else if(page==0&&millis()-lastPaint>500){transport();lastPaint=millis();}
+  if(dirty)draw();else if(millis()-lastPaint>250){refreshWidgets();lastPaint=millis();}
   delay(20);
 }
