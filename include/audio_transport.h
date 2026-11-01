@@ -11,6 +11,10 @@ class AudioTransport {
   }
   void want(bool value){wanted=value;}
   void audio(bool started) {
+    // A suspend event can arrive after a newer CHECK/START was sent, and a
+    // delayed STARTED event can arrive while SUSPEND is awaiting its ACK.
+    if(!started && (phase==Phase::Checking || phase==Phase::Starting))return;
+    if(started && phase==Phase::Suspending)return;
     phase=started?Phase::Started:Phase::Idle;ready=false;
   }
   Command poll(uint32_t now) {

@@ -41,6 +41,8 @@ volatile bool playing=false, ended=false;
 int current=-1, page=0, filter=0, offset=0, lyricPage=0;
 bool dirty=true, sdReady=false;
 uint32_t lastPaint=0;
+int savedVolume=90,observedVolume=90;
+uint32_t volumeChangedAt=0;
 TouchCalibration touchMapping;
 TouchPoint calibrationRaw[3];
 const TouchPoint calibrationTargets[]={{24,24},{296,24},{24,216},{160,120}};
@@ -226,7 +228,7 @@ void drawVolume(bool force=false) {
   shown=volume;
 }
 void transport(bool force=false) {
-  static int lastBar=-1,lastSecond=-1,lastDuration=-1,lastActive=-1,lastFavorite=-1;
+  static int lastBar=-1,lastSecond=-1,lastDuration=-1,lastPlaybackState=-1,lastFavorite=-1;
   static bool lastMp3=false;
   uint32_t position,total,pcmPosition;bool active,mp3Track;
   xSemaphoreTake(mediaLock,portMAX_DELAY);
@@ -251,9 +253,13 @@ void transport(bool force=false) {
   }
   int favorite=current>=0 && tracks[current].favorite;
   if(force){smoothButton(16,207,55,"PREV");smoothButton(189,207,55,"NEXT");}
-  if(force || lastActive!=int(active))smoothButton(80,207,100,active?"PAUSE":"PLAY",true);
+  int playbackState=!audio?0:!active?1:!bluetooth.is_connected()?2:
+    bluetooth.get_audio_state()!=ESP_A2D_AUDIO_STATE_STARTED?3:4;
+  const char *playbackLabels[]={"NO AUDIO","PLAY","WAIT BT","STARTING","PAUSE"};
+  if(force || lastPlaybackState!=playbackState)
+    smoothButton(80,207,100,playbackLabels[playbackState],playbackState!=0);
   if(force || lastFavorite!=favorite)smoothButton(253,207,51,favorite?"FAV*":"FAV");
-  lastActive=active;lastFavorite=favorite;
+  lastPlaybackState=playbackState;lastFavorite=favorite;
 }
 void refreshWidgets(bool force=false) {
   drawBluetooth(force);
@@ -361,6 +367,17 @@ void calibrationTick() {
   }
   calibrationDown=down;
 }
+void saveVolumeWhenStable() {
+  int level=bluetooth.get_volume();uint32_t now=millis();
+  if(level!=observedVolume){observedVolume=level;volumeChangedAt=now;return;}
+  if(level==savedVolume || uint32_t(now-volumeChangedAt)<1500)return;
+  volumeChangedAt=now; // Back off after a failed preferences write as well.
+  Preferences prefs;
+  if(prefs.begin("cyd-player",false)) {
+    if(prefs.putUChar("volume",uint8_t(level))==1)savedVolume=level;
+    prefs.end();
+  }
+}
 void setPlayerVolume(int level) {
   level=constrain(level,0,127);bluetooth.set_volume(level);
   if(bluetooth.is_connected()) {
@@ -429,7 +446,12 @@ void setup() {
   if(tracks.size())selectTrack(0);
   bluetooth.target=btName;Serial.printf("BT target: %s\n",btName.c_str());
   bluetooth.set_pin_code("0000",ESP_BT_PIN_TYPE_VARIABLE);
-  bluetooth.set_volume(90);
+  Preferences playerPrefs;
+  if(playerPrefs.begin("cyd-player",false)) {
+    savedVolume=playerPrefs.getUChar("volume",90);playerPrefs.end();
+  }
+  if(savedVolume>127)savedVolume=90;
+  observedVolume=savedVolume;bluetooth.set_volume(savedVolume);
   bluetooth.set_local_name("CYD Music");bluetooth.set_auto_reconnect(true);bluetooth.set_ssp_enabled(true);
   if(xTaskCreatePinnedToCore(audioProducer,"audio decode",24576,nullptr,2,nullptr,1)!=pdPASS){
     playing=false;notice="Audio task allocation failed";
@@ -478,6 +500,7 @@ void loop() {
   if(!boot&&wasBoot){if(millis()-bootPressedAt>=1500)startCalibration();else bluetooth.pairAgain();}
   wasBoot=boot;
   bluetooth.wantPlayback(playing);
+  saveVolumeWhenStable();
   if(calibrating){calibrationTick();wasTouch=true;delay(20);return;}
   int x,y;bool down=touch(x,y);if(down&&!wasTouch)tap(x,y);wasTouch=down;
   if(ended){ended=false;next(1);}

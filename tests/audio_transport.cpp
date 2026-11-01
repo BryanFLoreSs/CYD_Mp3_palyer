@@ -24,4 +24,17 @@ int main(){
  // Pause during readiness checking must not start the stream.
  t.want(false);t.ack(Command::Check,true,4803);assert(t.poll(4804)==Command::None);
  t.connection(false);t.want(true);assert(t.poll(6000)==Command::None);
+ // A late suspend notification must not cancel an in-flight resume.
+ AudioTransport late;late.connection(true);late.want(true);start(late,10);
+ late.want(false);assert(late.poll(100)==Command::Suspend);
+ late.want(true);late.ack(Command::Suspend,true,101);
+ assert(late.poll(102)==Command::Check);
+ late.audio(false);assert(late.poll(103)==Command::None);
+ late.ack(Command::Check,true,104);assert(late.poll(105)==Command::Start);
+ late.audio(false);assert(late.poll(106)==Command::None);
+ late.ack(Command::Start,true,107);late.audio(true);assert(late.poll(108)==Command::None);
+ // A late start notification must not send SUSPEND twice.
+ late.want(false);assert(late.poll(200)==Command::Suspend);
+ late.audio(true);assert(late.poll(201)==Command::None);
+ late.ack(Command::Suspend,true,202);assert(late.poll(203)==Command::None);
 }

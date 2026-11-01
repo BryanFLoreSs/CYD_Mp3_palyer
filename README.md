@@ -91,3 +91,13 @@ Pause/resume hardware validation passed on ES-BT09: three pause/resume sequences
 # CYD_Mp3_palyer
 
 Screen redraws: dynamic widgets use one reusable 288×30, 4-bit sprite (about 4.3 KB). Timeline updates are sent only when the elapsed second or progress pixel changes; Play/Pause, favorites, volume and Bluetooth status update independently. Normal playback no longer clears the bottom 67 pixels twice per second. Volume, playback and Bluetooth changes do not clear the whole screen. Full repainting is limited to page/content changes and leaving calibration. Diagnostics include `uiClears` and `uiPushes` to check redraw behavior on the board.
+
+Redraw hardware check passed: the widget sprite initialized, `uiClears` stayed at 1 through connection changes, a pause/resume toggle and progressing playback, and audio continued with zero PCM underruns. Results are in `tests/hardware_redraw.json`. Actual perceived flicker should be confirmed visually on the board.
+
+## Playback usability and reliability update
+
+The transport button distinguishes `NO AUDIO`, `WAIT BT`, `STARTING`, `PLAY` and `PAUSE`. Waiting for the Bluetooth data channel no longer appears as active playback. These label updates use the existing buffered widgets.
+
+Volume is restored from ESP32 preferences at startup and saved after it remains unchanged for 1.5 seconds, including changes made on the earbuds. Wait briefly after changing volume before unplugging power. Saving is debounced to avoid writing flash for every button press; failed writes also back off. Touch calibration uses a separate preferences namespace.
+
+Delayed Bluetooth audio notifications no longer cancel an outstanding readiness/start command or generate duplicate suspend requests. Regression tests cover late notifications both during resume and during pause. The PlatformIO release build and native transport/calibration checks passed for this update; new firmware still needs to be flashed to the board for physical validation.
